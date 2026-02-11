@@ -271,10 +271,9 @@ def markdown_to_notion_blocks(md: str) -> list[dict]:
 
 def notion_page_exists_for_date(notion: NotionClient, db_id: str, date_str: str) -> bool:
     """Check if a page with this date already exists in the database."""
-    results = notion.databases.query(
-        database_id=db_id,
-        filter={"property": "Date", "date": {"equals": date_str}},
-        page_size=1,
+    results = notion.client.post(
+        f"databases/{db_id}/query",
+        body={"filter": {"property": "Date", "date": {"equals": date_str}}, "page_size": 1},
     )
     return len(results.get("results", [])) > 0
 
