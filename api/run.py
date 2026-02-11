@@ -18,7 +18,8 @@ from notion_client import Client as NotionClient
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
-REDDIT_FEED_URL = "https://www.reddit.com/user/bowtiedswan/m/aillms.json"
+REDDIT_MULTIREDDIT = "https://oauth.reddit.com/user/bowtiedswan/m/aillms.json"
+REDDIT_TOKEN_URL = "https://www.reddit.com/api/v1/access_token"
 USER_AGENT = "ai-news-monitor/2.0 (by /u/ai-news-bot)"
 MAX_POSTS = 20
 
@@ -38,12 +39,34 @@ RELEVANT_TAGS = [
 # ---------------------------------------------------------------------------
 # Reddit helpers
 # ---------------------------------------------------------------------------
+def _get_reddit_token() -> str:
+    """Obtain an OAuth2 app-only token from Reddit."""
+    client_id = os.environ.get("REDDIT_CLIENT_ID", "")
+    client_secret = os.environ.get("REDDIT_CLIENT_SECRET", "")
+    if not client_id or not client_secret:
+        raise RuntimeError("REDDIT_CLIENT_ID and REDDIT_CLIENT_SECRET must be set")
+
+    with httpx.Client(timeout=15.0) as client:
+        resp = client.post(
+            REDDIT_TOKEN_URL,
+            auth=(client_id, client_secret),
+            data={"grant_type": "client_credentials"},
+            headers={"User-Agent": USER_AGENT},
+        )
+        resp.raise_for_status()
+        return resp.json()["access_token"]
+
+
 def fetch_reddit_posts() -> list[dict]:
-    """Fetch posts from the Reddit multireddit JSON feed (sync)."""
+    """Fetch posts from the Reddit multireddit via OAuth."""
+    token = _get_reddit_token()
     with httpx.Client(timeout=30.0) as client:
         resp = client.get(
-            REDDIT_FEED_URL,
-            headers={"User-Agent": USER_AGENT},
+            REDDIT_MULTIREDDIT,
+            headers={
+                "Authorization": f"Bearer {token}",
+                "User-Agent": USER_AGENT,
+            },
             follow_redirects=True,
         )
         resp.raise_for_status()
