@@ -269,8 +269,18 @@ def markdown_to_notion_blocks(md: str) -> list[dict]:
     return blocks[:100]  # Notion limit
 
 
+def notion_page_exists_for_date(notion: NotionClient, db_id: str, date_str: str) -> bool:
+    """Check if a page with this date already exists in the database."""
+    results = notion.databases.query(
+        database_id=db_id,
+        filter={"property": "Date", "date": {"equals": date_str}},
+        page_size=1,
+    )
+    return len(results.get("results", [])) > 0
+
+
 def publish_to_notion(content: str, date_str: str) -> str:
-    """Publish summary to Notion database. Returns page URL."""
+    """Publish summary to Notion database. Returns page URL. Skips if date exists."""
     api_key = os.environ.get("NOTION_API_KEY")
     if not api_key:
         raise RuntimeError("NOTION_API_KEY not set")
@@ -278,6 +288,10 @@ def publish_to_notion(content: str, date_str: str) -> str:
     db_id = os.environ.get("NOTION_DATABASE_ID", DEFAULT_NOTION_DATABASE_ID)
     title = f"AI Alpha - {date_str}"
     notion = NotionClient(auth=api_key)
+
+    if notion_page_exists_for_date(notion, db_id, date_str):
+        return f"SKIPPED: page for {date_str} already exists"
+
     blocks = markdown_to_notion_blocks(content)
 
     page = notion.pages.create(
@@ -354,6 +368,7 @@ def run_pipeline() -> dict:
         "posts_fetched": len(all_posts),
         "posts_relevant": len(relevant),
         "summary_length": len(summary),
+        "summary": summary,
         "notion_url": notion_url,
         "log": log,
     }
