@@ -1,0 +1,21 @@
+name: Daily AI News Trigger
+
+on:
+  schedule:
+    - cron: '0 9 * * *'
+  workflow_dispatch:
+
+jobs:
+  trigger:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger Vercel webhook
+        run: |
+          BODY='{"trigger":"github-cron","timestamp":"'"$(date -u +%Y-%m-%dT%H:%M:%SZ)"'"}'
+          SIGNATURE="sha256=$(echo -n "$BODY" | openssl dgst -sha256 -hmac "${{ secrets.WEBHOOK_SECRET }}" | awk '{print $2}')"
+
+          curl -sf -X POST "${{ secrets.WEBHOOK_URL }}" \
+            -H "Content-Type: application/json" \
+            -H "X-Webhook-Signature: $SIGNATURE" \
+            -d "$BODY" \
+            --max-time 120

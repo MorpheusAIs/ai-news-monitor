@@ -1,0 +1,378 @@
+"""
+AI News Monitor - Vercel Serverless Function
+Webhook endpoint triggered by GitHub Actions cron job.
+Fetches Reddit AI/LLM news, generates summary via OpenRouter, publishes to Notion.
+"""
+
+import json
+import os
+import hmac
+import hashlib
+from datetime import datetime
+from http.server import BaseHTTPRequestHandler
+
+import httpx
+from notion_client import Client as NotionClient
+
+
+# ---------------------------------------------------------------------------
+# Configuration
+# ---------------------------------------------------------------------------
+REDDIT_FEED_URL = "https://www.reddit.com/user/bowtiedswan/m/aillms.json"
+USER_AGENT = "ai-news-monitor/2.0 (by /u/ai-news-bot)"
+MAX_POSTS = 20
+
+OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
+OPENROUTER_MODEL = "stepfun/step-3.5-flash:free"
+
+DEFAULT_NOTION_DATABASE_ID = "21d90be5f44d80ffa169cbb40567085b"
+
+RELEVANT_TAGS = [
+    "claude", "cursor", "mcp", "agents", "tutorial", "review",
+    "release", "launch", "openai", "gpt", "llm", "anthropic",
+    "gemini", "mistral", "llama", "copilot", "ai-coding", "rag",
+    "fine-tuning", "prompt-engineering", "embeddings", "vector",
+]
+
+
+# ---------------------------------------------------------------------------
+# Reddit helpers
+# ---------------------------------------------------------------------------
+def fetch_reddit_posts() -> list[dict]:
+    """Fetch posts from the Reddit multireddit JSON feed (sync)."""
+    with httpx.Client(timeout=30.0) as client:
+        resp = client.get(
+            REDDIT_FEED_URL,
+            headers={"User-Agent": USER_AGENT},
+            follow_redirects=True,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+
+    return [child["data"] for child in data.get("data", {}).get("children", [])]
+
+
+def filter_relevant_posts(posts: list[dict]) -> list[dict]:
+    """Remove image/video/meme posts, keep text and link posts."""
+    image_domains = {
+        "i.redd.it", "i.imgur.com", "imgur.com", "gfycat.com",
+        "v.redd.it", "reddit.com/gallery", "giphy.com", "tenor.com",
+    }
+    meme_flair = ["meme", "joke", "funny", "humor", "shitpost"]
+    filtered = []
+
+    for p in posts:
+        if p.get("is_video"):
+            continue
+        domain = p.get("domain", "")
+        if any(d in domain for d in image_domains):
+            continue
+        if p.get("post_hint", "") in ("image", "hosted:video", "rich:video"):
+            continue
+        flair = (p.get("link_flair_text") or "").lower()
+        if any(m in flair for m in meme_flair):
+            continue
+        if p.get("is_gallery"):
+            continue
+        filtered.append(p)
+
+    return filtered
+
+
+def rank_posts(posts: list[dict]) -> list[dict]:
+    """Sort by engagement: upvotes + 2*comments."""
+    return sorted(
+        posts,
+        key=lambda p: p.get("ups", 0) + p.get("num_comments", 0) * 2,
+        reverse=True,
+    )
+
+
+def extract_tags(post: dict) -> list[str]:
+    """Find relevant tags in title + selftext."""
+    text = f"{post.get('title', '')} {post.get('selftext', '')}".lower()
+    return list({t for t in RELEVANT_TAGS if t in text})
+
+
+def prepare_posts_text(posts: list[dict], max_posts: int = MAX_POSTS) -> str:
+    """Format top posts as markdown for the LLM prompt."""
+    lines: list[str] = []
+    for i, p in enumerate(posts[:max_posts], 1):
+        title = p.get("title", "No title")
+        url = f"https://reddit.com{p.get('permalink', '')}"
+        selftext = p.get("selftext", "")[:500]
+        ups = p.get("ups", 0)
+        comments = p.get("num_comments", 0)
+        ext_url = p.get("url", "")
+        subreddit = p.get("subreddit", "")
+        tags = extract_tags(p)
+
+        lines.append(f"""
+### Post {i}: {title}
+- **Subreddit**: r/{subreddit}
+- **Upvotes**: {ups} | **Comments**: {comments}
+- **Reddit Link**: {url}
+- **External Link**: {ext_url if ext_url != url else 'N/A'}
+- **Detected Tags**: {', '.join(tags) if tags else 'None'}
+- **Preview**: {selftext[:200] + '...' if len(selftext) > 200 else selftext or 'No text content'}
+""")
+    return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# OpenRouter LLM
+# ---------------------------------------------------------------------------
+def generate_summary(posts_data: str, date_str: str) -> str:
+    """Call OpenRouter to generate the news summary."""
+    api_key = os.environ.get("OPENROUTER_API_KEY")
+    if not api_key:
+        raise RuntimeError("OPENROUTER_API_KEY not set")
+
+    prompt = f"""You are an AI news analyst. Analyze the following Reddit posts from AI/LLM communities and create a comprehensive daily summary.
+
+## Today's Date: {date_str}
+
+## Posts to Analyze:
+{posts_data}
+
+## Your Task:
+Create a well-structured markdown summary with the following sections:
+
+1. **Executive Summary** (2-3 sentences highlighting the most important developments)
+
+2. **Top Stories** (Pick the 5-7 most significant posts)
+   - For each: Brief description, why it matters, and the link
+
+3. **Trends & Themes** (What patterns do you see across posts?)
+
+4. **Actionable Insights** (What should readers do based on this news?)
+   - Tools to try
+   - Techniques to learn
+   - Things to watch out for
+
+5. **Quick Links** (Categorized list of all relevant links)
+
+6. **Tags** (Comma-separated list of all relevant tags from: claude, cursor, mcp, agents, tutorial, review, release, launch, openai, gpt, llm, anthropic, gemini, mistral, llama, copilot, ai-coding, rag, fine-tuning, prompt-engineering, embeddings, vector)
+
+Format your response as clean markdown that can be saved directly to a file.
+Start with a title: # AI Alpha - {date_str}
+"""
+
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+        "HTTP-Referer": "https://github.com/MorpheusAIs/ai-news-monitor",
+        "X-Title": "AI News Monitor",
+    }
+
+    payload = {
+        "model": OPENROUTER_MODEL,
+        "messages": [
+            {
+                "role": "system",
+                "content": (
+                    "You are an AI news analyst specializing in AI/ML developments. "
+                    "Focus on accuracy, technical depth, and actionable insights. "
+                    "Format all output as clean markdown."
+                ),
+            },
+            {"role": "user", "content": prompt},
+        ],
+        "temperature": 0.7,
+        "max_tokens": 4000,
+    }
+
+    with httpx.Client(timeout=55.0) as client:
+        resp = client.post(OPENROUTER_URL, headers=headers, json=payload)
+        resp.raise_for_status()
+        data = resp.json()
+
+    choices = data.get("choices", [])
+    if not choices:
+        raise RuntimeError(f"OpenRouter returned no choices: {json.dumps(data)}")
+
+    content = choices[0].get("message", {}).get("content", "")
+    if not content.strip():
+        raise RuntimeError("OpenRouter returned empty content")
+
+    return content
+
+
+# ---------------------------------------------------------------------------
+# Notion publishing
+# ---------------------------------------------------------------------------
+def markdown_to_notion_blocks(md: str) -> list[dict]:
+    """Convert markdown to Notion blocks (simplified)."""
+    blocks: list[dict] = []
+    for line in md.split("\n"):
+        stripped = line.strip()
+        if not stripped:
+            continue
+
+        if stripped.startswith("# "):
+            blocks.append({
+                "object": "block", "type": "heading_1",
+                "heading_1": {"rich_text": [{"type": "text", "text": {"content": stripped[2:]}}]},
+            })
+        elif stripped.startswith("## "):
+            blocks.append({
+                "object": "block", "type": "heading_2",
+                "heading_2": {"rich_text": [{"type": "text", "text": {"content": stripped[3:]}}]},
+            })
+        elif stripped.startswith("### "):
+            blocks.append({
+                "object": "block", "type": "heading_3",
+                "heading_3": {"rich_text": [{"type": "text", "text": {"content": stripped[4:]}}]},
+            })
+        elif stripped.startswith(("- ", "* ")):
+            blocks.append({
+                "object": "block", "type": "bulleted_list_item",
+                "bulleted_list_item": {"rich_text": [{"type": "text", "text": {"content": stripped[2:]}}]},
+            })
+        elif len(stripped) > 2 and stripped[0].isdigit() and stripped[1] in ".)":
+            blocks.append({
+                "object": "block", "type": "numbered_list_item",
+                "numbered_list_item": {"rich_text": [{"type": "text", "text": {"content": stripped[2:].strip()}}]},
+            })
+        elif stripped in ("---", "***", "___"):
+            blocks.append({"object": "block", "type": "divider", "divider": {}})
+        else:
+            text = stripped[:2000]
+            blocks.append({
+                "object": "block", "type": "paragraph",
+                "paragraph": {"rich_text": [{"type": "text", "text": {"content": text}}]},
+            })
+
+    return blocks[:100]  # Notion limit
+
+
+def publish_to_notion(content: str, date_str: str) -> str:
+    """Publish summary to Notion database. Returns page URL."""
+    api_key = os.environ.get("NOTION_API_KEY")
+    if not api_key:
+        raise RuntimeError("NOTION_API_KEY not set")
+
+    db_id = os.environ.get("NOTION_DATABASE_ID", DEFAULT_NOTION_DATABASE_ID)
+    title = f"AI Alpha - {date_str}"
+    notion = NotionClient(auth=api_key)
+    blocks = markdown_to_notion_blocks(content)
+
+    page = notion.pages.create(
+        parent={"database_id": db_id},
+        properties={
+            "Title": {"title": [{"text": {"content": title}}]},
+            "Date": {"date": {"start": date_str}},
+        },
+        children=blocks,
+    )
+    return page.get("url", "")
+
+
+# ---------------------------------------------------------------------------
+# Webhook authentication
+# ---------------------------------------------------------------------------
+def verify_webhook(secret: str, body: bytes, signature: str) -> bool:
+    """Verify HMAC-SHA256 webhook signature."""
+    expected = hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
+    return hmac.compare_digest(f"sha256={expected}", signature)
+
+
+# ---------------------------------------------------------------------------
+# Main pipeline
+# ---------------------------------------------------------------------------
+def run_pipeline() -> dict:
+    """Execute the full news monitoring pipeline. Returns status dict."""
+    date_str = datetime.utcnow().strftime("%Y-%m-%d")
+    log: list[str] = [f"Starting AI News Monitor run for {date_str}"]
+
+    # 1. Fetch
+    all_posts = fetch_reddit_posts()
+    log.append(f"Fetched {len(all_posts)} posts from Reddit")
+
+    if not all_posts:
+        return {"status": "ok", "message": "No posts found", "log": log}
+
+    # 2. Filter
+    relevant = filter_relevant_posts(all_posts)
+    log.append(f"{len(relevant)} posts after filtering (removed {len(all_posts) - len(relevant)})")
+
+    if not relevant:
+        return {"status": "ok", "message": "No relevant posts", "log": log}
+
+    # 3. Rank
+    ranked = rank_posts(relevant)
+    if ranked:
+        log.append(f"Top post: {ranked[0].get('title', '?')[:60]}")
+
+    # 4. Generate summary
+    posts_data = prepare_posts_text(ranked)
+    summary = generate_summary(posts_data, date_str)
+    log.append(f"Generated summary: {len(summary)} chars")
+
+    # 5. Publish to Notion
+    notion_url = ""
+    skip_notion = os.environ.get("SKIP_NOTION", "").lower() == "true"
+    notion_key = os.environ.get("NOTION_API_KEY")
+
+    if skip_notion:
+        log.append("Skipped Notion publishing (SKIP_NOTION=true)")
+    elif not notion_key:
+        log.append("Skipped Notion publishing (NOTION_API_KEY not set)")
+    else:
+        try:
+            notion_url = publish_to_notion(summary, date_str)
+            log.append(f"Published to Notion: {notion_url}")
+        except Exception as exc:
+            log.append(f"Notion publishing failed: {exc}")
+
+    return {
+        "status": "ok",
+        "date": date_str,
+        "posts_fetched": len(all_posts),
+        "posts_relevant": len(relevant),
+        "summary_length": len(summary),
+        "notion_url": notion_url,
+        "log": log,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Vercel handler
+# ---------------------------------------------------------------------------
+class handler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        """Health check."""
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.end_headers()
+        self.wfile.write(json.dumps({"status": "ok", "service": "ai-news-monitor"}).encode())
+
+    def do_POST(self):
+        """Webhook endpoint — triggers the news pipeline."""
+        # Read body
+        length = int(self.headers.get("Content-Length", 0))
+        body = self.rfile.read(length)
+
+        # Authenticate
+        webhook_secret = os.environ.get("WEBHOOK_SECRET", "")
+        if webhook_secret:
+            sig = self.headers.get("X-Webhook-Signature", "")
+            if not verify_webhook(webhook_secret, body, sig):
+                self.send_response(401)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(json.dumps({"error": "Invalid signature"}).encode())
+                return
+
+        # Run pipeline
+        try:
+            result = run_pipeline()
+            status_code = 200
+        except Exception as exc:
+            result = {"status": "error", "error": str(exc)}
+            status_code = 500
+
+        self.send_response(status_code)
+        self.send_header("Content-Type", "application/json")
+        self.end_headers()
+        self.wfile.write(json.dumps(result, default=str).encode())
