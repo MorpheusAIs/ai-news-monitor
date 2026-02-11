@@ -279,7 +279,7 @@ def notion_page_exists_for_date(api_key: str, db_id: str, date_str: str) -> bool
                 "Notion-Version": "2022-06-28",
                 "Content-Type": "application/json",
             },
-            json={"filter": {"property": "Date", "date": {"equals": date_str}}, "page_size": 1},
+            json={"filter": {"property": "datetime", "date": {"equals": date_str}}, "page_size": 1},
         )
         resp.raise_for_status()
         return len(resp.json().get("results", [])) > 0
@@ -304,7 +304,7 @@ def publish_to_notion(content: str, date_str: str) -> str:
         parent={"database_id": db_id},
         properties={
             "Title": {"title": [{"text": {"content": title}}]},
-            "Date": {"date": {"start": date_str}},
+            "datetime": {"date": {"start": date_str}},
         },
         children=blocks,
     )
