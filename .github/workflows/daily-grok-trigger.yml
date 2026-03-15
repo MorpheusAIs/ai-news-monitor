@@ -11,10 +11,13 @@ jobs:
     steps:
       - name: Trigger Vercel Grok webhook
         run: |
-          BODY='{"trigger":"github-cron","timestamp":"'"$(date -u +%Y-%m-%dT%H:%M:%SZ)"'","job_type":"grok"}'
+          BODY='{"trigger":"github-cron","timestamp":"'"$(date -u +%Y-%m-%dT%H:%M:%SZ)"'"}'
           SIGNATURE="sha256=$(echo -n "$BODY" | openssl dgst -sha256 -hmac "${{ secrets.WEBHOOK_SECRET }}" | awk '{print $2}')"
 
-          curl -sf -X POST "${{ secrets.WEBHOOK_URL }}" \
+          GROK_URL="${{ secrets.WEBHOOK_URL }}"
+          GROK_URL="${GROK_URL%/api/run}/api/grok"
+
+          curl -sf -X POST "$GROK_URL" \
             -H "Content-Type: application/json" \
             -H "X-Webhook-Signature: $SIGNATURE" \
             -d "$BODY" \
