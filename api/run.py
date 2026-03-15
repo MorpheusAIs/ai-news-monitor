@@ -146,7 +146,7 @@ def prepare_posts_text(posts: list[dict], max_posts: int = MAX_POSTS) -> str:
 # OpenRouter LLM
 # ---------------------------------------------------------------------------
 def generate_summary(posts_data: str, date_str: str) -> str:
-    """Call OpenRouter to generate the news summary."""
+    """Call OpenRouter to generate the AI Alpha news summary."""
     api_key = os.environ.get("OPENROUTER_API_KEY")
     if not api_key:
         raise RuntimeError("OPENROUTER_API_KEY not set")
@@ -164,14 +164,14 @@ Create a well-structured markdown summary with the following sections:
 1. **Executive Summary** (2-3 sentences highlighting the most important developments)
 
 2. **Top Stories** (Pick the 5-7 most significant posts)
-   - For each: Brief description, why it matters, and the link
+    - For each: Brief description, why it matters, and the link
 
 3. **Trends & Themes** (What patterns do you see across posts?)
 
 4. **Actionable Insights** (What should readers do based on this news?)
-   - Tools to try
-   - Techniques to learn
-   - Things to watch out for
+    - Tools to try
+    - Techniques to learn
+    - Things to watch out for
 
 5. **Quick Links** (Categorized list of all relevant links)
 
@@ -201,6 +201,86 @@ Start with a title: # AI Alpha - {date_str}
             },
             {"role": "user", "content": prompt},
         ],
+        "temperature": 0.7,
+        "max_tokens": 4000,
+    }
+
+    with httpx.Client(timeout=55.0) as client:
+        resp = client.post(OPENROUTER_URL, headers=headers, json=payload)
+        resp.raise_for_status()
+        data = resp.json()
+
+    choices = data.get("choices", [])
+    if not choices:
+        raise RuntimeError(f"OpenRouter returned no choices: {json.dumps(data)}")
+
+    content = choices[0].get("message", {}).get("content", "")
+    if not content.strip():
+        raise RuntimeError("OpenRouter returned empty content")
+
+    return content
+
+
+def generate_grok_summary(posts_data: str, date_str: str) -> str:
+    """Call OpenRouter Grok to generate the Grok Alpha news summary with reasoning."""
+    api_key = os.environ.get("OPENROUTER_API_KEY")
+    if not api_key:
+        raise RuntimeError("OPENROUTER_API_KEY not set")
+
+    prompt = f"""Summarize the most important AI & Tech developments from the past 24 hours, including new tools, updates, and announcements. Prioritize model releases, new papers, viral X posts or threads (that either show an authors project or a new open source project, announcement, a breakthrough, a cool implementation etc) and open-source projects and include source links from web searches, X posts, etc. Organize the information to be easily digestible and readable.
+
+## Today's Date: {date_str}
+
+## Reddit Posts to Analyze:
+{posts_data}
+
+## Your Task:
+Create a well-structured markdown summary with the following sections:
+
+1. **Executive Summary** (2-3 sentences highlighting the most important developments)
+
+2. **Top Stories** (Pick the 5-7 most significant posts)
+    - For each: Brief description, why it matters, and the link
+
+3. **Trends & Themes** (What patterns do you see across posts?)
+
+4. **Actionable Insights** (What should readers do based on this news?)
+    - Tools to try
+    - Techniques to learn
+    - Things to watch out for
+
+5. **Quick Links** (Categorized list of all relevant links with sources)
+
+6. **Tags** (Comma-separated list of all relevant tags from: claude, cursor, mcp, agents, tutorial, review, release, launch, openai, gpt, llm, anthropic, gemini, mistral, llama, copilot, ai-coding, rag, fine-tuning, prompt-engineering, embeddings, vector, grok)
+
+Format your response as clean markdown that can be saved directly to a file.
+Start with a title: # Grok Alpha - {date_str}
+"""
+
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+        "HTTP-Referer": "https://github.com/MorpheusAIs/ai-news-monitor",
+        "X-Title": "AI News Monitor - Grok Alpha",
+    }
+
+    payload = {
+        "model": "x-ai/grok-4.1-fast",
+        "messages": [
+            {
+                "role": "system",
+                "content": (
+                    "You are an expert AI & Tech news analyst. Provide comprehensive, accurate analysis "
+                    "of the latest AI/ML developments, new releases, and emerging trends. "
+                    "Format all output as clean, well-structured markdown. "
+                    "Include direct links and citations from the provided Reddit posts."
+                ),
+            },
+            {"role": "user", "content": prompt},
+        ],
+        "reasoning": {
+            "effort": "medium"
+        },
         "temperature": 0.7,
         "max_tokens": 4000,
     }
@@ -269,8 +349,8 @@ def markdown_to_notion_blocks(md: str) -> list[dict]:
     return blocks[:100]  # Notion limit
 
 
-def notion_page_exists_for_date(api_key: str, db_id: str, date_str: str) -> bool:
-    """Check if a page with this date already exists (raw API call)."""
+def notion_page_exists(api_key: str, db_id: str, date_str: str, title_prefix: str = "AI Alpha") -> bool:
+    """Check if a page with this title and date already exists (raw API call)."""
     with httpx.Client(timeout=15.0) as client:
         resp = client.post(
             f"https://api.notion.com/v1/databases/{db_id}/query",
@@ -279,24 +359,32 @@ def notion_page_exists_for_date(api_key: str, db_id: str, date_str: str) -> bool
                 "Notion-Version": "2022-06-28",
                 "Content-Type": "application/json",
             },
-            json={"filter": {"property": "datetime", "date": {"equals": date_str}}, "page_size": 1},
+            json={
+                "filter": {
+                    "and": [
+                        {"property": "datetime", "date": {"equals": date_str}},
+                        {"property": "Title", "title": {"contains": title_prefix}}
+                    ]
+                },
+                "page_size": 1
+            },
         )
         resp.raise_for_status()
         return len(resp.json().get("results", [])) > 0
 
 
-def publish_to_notion(content: str, date_str: str) -> str:
-    """Publish summary to Notion database. Returns page URL. Skips if date exists."""
+def publish_to_notion(content: str, date_str: str, title_prefix: str = "AI Alpha") -> str:
+    """Publish summary to Notion database. Returns page URL. Skips if page with same title and date exists."""
     api_key = os.environ.get("NOTION_API_KEY")
     if not api_key:
         raise RuntimeError("NOTION_API_KEY not set")
 
     db_id = os.environ.get("NOTION_DATABASE_ID", DEFAULT_NOTION_DATABASE_ID)
-    title = f"AI Alpha - {date_str}"
+    title = f"{title_prefix} - {date_str}"
     notion = NotionClient(auth=api_key)
 
-    if notion_page_exists_for_date(api_key, db_id, date_str):
-        return f"SKIPPED: page for {date_str} already exists"
+    if notion_page_exists(api_key, db_id, date_str, title_prefix):
+        return f"SKIPPED: page '{title}' already exists"
 
     blocks = markdown_to_notion_blocks(content)
 
@@ -323,10 +411,12 @@ def verify_webhook(secret: str, body: bytes, signature: str) -> bool:
 # ---------------------------------------------------------------------------
 # Main pipeline
 # ---------------------------------------------------------------------------
-def run_pipeline() -> dict:
-    """Execute the full news monitoring pipeline. Returns status dict."""
+def run_pipeline(job_type: str = "alpha") -> dict:
+    """Execute the news monitoring pipeline. Returns status dict. job_type: 'alpha' or 'grok'."""
     date_str = datetime.utcnow().strftime("%Y-%m-%d")
-    log: list[str] = [f"Starting AI News Monitor run for {date_str}"]
+    job_name = "Grok Alpha" if job_type == "grok" else "AI Alpha"
+    title_prefix = "Grok Alpha" if job_type == "grok" else "AI Alpha"
+    log: list[str] = [f"Starting {job_name} run for {date_str}"]
 
     # 1. Fetch
     all_posts = fetch_reddit_posts()
@@ -349,8 +439,12 @@ def run_pipeline() -> dict:
 
     # 4. Generate summary
     posts_data = prepare_posts_text(ranked)
-    summary = generate_summary(posts_data, date_str)
-    log.append(f"Generated summary: {len(summary)} chars")
+    if job_type == "grok":
+        summary = generate_grok_summary(posts_data, date_str)
+        log.append(f"Generated Grok summary (reasoning=medium): {len(summary)} chars")
+    else:
+        summary = generate_summary(posts_data, date_str)
+        log.append(f"Generated AI Alpha summary: {len(summary)} chars")
 
     # 5. Publish to Notion
     notion_url = ""
@@ -363,13 +457,14 @@ def run_pipeline() -> dict:
         log.append("Skipped Notion publishing (NOTION_API_KEY not set)")
     else:
         try:
-            notion_url = publish_to_notion(summary, date_str)
+            notion_url = publish_to_notion(summary, date_str, title_prefix)
             log.append(f"Published to Notion: {notion_url}")
         except Exception as exc:
             log.append(f"Notion publishing failed: {exc}")
 
     return {
         "status": "ok",
+        "job_type": job_type,
         "date": date_str,
         "posts_fetched": len(all_posts),
         "posts_relevant": len(relevant),
@@ -392,7 +487,7 @@ class handler(BaseHTTPRequestHandler):
         self.wfile.write(json.dumps({"status": "ok", "service": "ai-news-monitor"}).encode())
 
     def do_POST(self):
-        """Webhook endpoint — triggers the news pipeline."""
+        """Webhook endpoint — triggers the news pipeline. Optional JSON body: {'job_type': 'alpha' or 'grok'}"""
         # Read body
         length = int(self.headers.get("Content-Length", 0))
         body = self.rfile.read(length)
@@ -408,9 +503,18 @@ class handler(BaseHTTPRequestHandler):
                 self.wfile.write(json.dumps({"error": "Invalid signature"}).encode())
                 return
 
+        # Parse job_type from body
+        job_type = "alpha"
+        if body:
+            try:
+                data = json.loads(body)
+                job_type = data.get("job_type", "alpha")
+            except json.JSONDecodeError:
+                pass
+
         # Run pipeline
         try:
-            result = run_pipeline()
+            result = run_pipeline(job_type=job_type)
             status_code = 200
         except Exception as exc:
             result = {"status": "error", "error": str(exc)}
