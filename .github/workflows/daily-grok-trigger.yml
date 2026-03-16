@@ -14,10 +14,7 @@ jobs:
           BODY='{"trigger":"github-cron","timestamp":"'"$(date -u +%Y-%m-%dT%H:%M:%SZ)"'"}'
           SIGNATURE="sha256=$(echo -n "$BODY" | openssl dgst -sha256 -hmac "${{ secrets.WEBHOOK_SECRET }}" | awk '{print $2}')"
 
-          GROK_URL="${{ secrets.WEBHOOK_URL }}"
-          GROK_URL="${GROK_URL%/api/run}/api/grok"
-
-          curl -sf -X POST "$GROK_URL" \
+          curl -sf -X POST "${{ secrets.GROK_WEBHOOK_URL }}" \
             -H "Content-Type: application/json" \
             -H "X-Webhook-Signature: $SIGNATURE" \
             -d "$BODY" \
