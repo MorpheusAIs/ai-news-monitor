@@ -9,7 +9,7 @@ import json
 import os
 import hmac
 import hashlib
-from datetime import datetime
+from datetime import datetime, timedelta
 from http.server import BaseHTTPRequestHandler
 
 import httpx
@@ -26,12 +26,17 @@ def generate_grok_report(date_str: str) -> str:
     if not api_key:
         raise RuntimeError("OPENROUTER_API_KEY not set")
 
+    end_date = datetime.strptime(date_str, "%Y-%m-%d")
+    start_date = end_date - timedelta(days=1)
+
     prompt = (
         "Summarize the most important AI & Tech developments from the past 24 hours, "
         "including new tools, updates, and announcements. Prioritize model releases, "
         "new papers, viral X posts or threads (that either show an authors project or "
         "a new open source project, announcement, a breakthrough, a cool implementation etc) "
         "and open-source projects and include source links from web searches, X posts, etc. "
+        "For every key point or example sourced from X, include the actual https://x.com/... post link, "
+        "author handle, and post date. Use only real data returned by search tools. "
         "Organize the information to be easily digestible and readable.\n\n"
         f"Today's date: {date_str}\n\n"
         "Format your response as clean markdown.\n"
@@ -55,11 +60,18 @@ def generate_grok_report(date_str: str) -> str:
                     "Provide comprehensive, accurate analysis of the most important AI/ML developments, "
                     "new releases, viral posts, and emerging trends from the past 24 hours. "
                     "Include real source links (X/Twitter posts, GitHub repos, blog posts, arxiv papers). "
+                    "When citing X content, include the actual https://x.com/... post URL, author handle, and date, "
+                    "and do not invent or paraphrase links. "
                     "Format all output as clean, well-structured markdown."
                 ),
             },
             {"role": "user", "content": prompt},
         ],
+        "plugins": [{"id": "web"}],
+        "x_search_filter": {
+            "from_date": start_date.strftime("%Y-%m-%d"),
+            "to_date": end_date.strftime("%Y-%m-%d"),
+        },
         "reasoning": {
             "effort": "medium",
         },
@@ -91,38 +103,78 @@ def markdown_to_notion_blocks(md: str) -> list[dict]:
             continue
 
         if stripped.startswith("# "):
-            blocks.append({
-                "object": "block", "type": "heading_1",
-                "heading_1": {"rich_text": [{"type": "text", "text": {"content": stripped[2:]}}]},
-            })
+            blocks.append(
+                {
+                    "object": "block",
+                    "type": "heading_1",
+                    "heading_1": {
+                        "rich_text": [
+                            {"type": "text", "text": {"content": stripped[2:]}}
+                        ]
+                    },
+                }
+            )
         elif stripped.startswith("## "):
-            blocks.append({
-                "object": "block", "type": "heading_2",
-                "heading_2": {"rich_text": [{"type": "text", "text": {"content": stripped[3:]}}]},
-            })
+            blocks.append(
+                {
+                    "object": "block",
+                    "type": "heading_2",
+                    "heading_2": {
+                        "rich_text": [
+                            {"type": "text", "text": {"content": stripped[3:]}}
+                        ]
+                    },
+                }
+            )
         elif stripped.startswith("### "):
-            blocks.append({
-                "object": "block", "type": "heading_3",
-                "heading_3": {"rich_text": [{"type": "text", "text": {"content": stripped[4:]}}]},
-            })
+            blocks.append(
+                {
+                    "object": "block",
+                    "type": "heading_3",
+                    "heading_3": {
+                        "rich_text": [
+                            {"type": "text", "text": {"content": stripped[4:]}}
+                        ]
+                    },
+                }
+            )
         elif stripped.startswith(("- ", "* ")):
-            blocks.append({
-                "object": "block", "type": "bulleted_list_item",
-                "bulleted_list_item": {"rich_text": [{"type": "text", "text": {"content": stripped[2:]}}]},
-            })
+            blocks.append(
+                {
+                    "object": "block",
+                    "type": "bulleted_list_item",
+                    "bulleted_list_item": {
+                        "rich_text": [
+                            {"type": "text", "text": {"content": stripped[2:]}}
+                        ]
+                    },
+                }
+            )
         elif len(stripped) > 2 and stripped[0].isdigit() and stripped[1] in ".)":
-            blocks.append({
-                "object": "block", "type": "numbered_list_item",
-                "numbered_list_item": {"rich_text": [{"type": "text", "text": {"content": stripped[2:].strip()}}]},
-            })
+            blocks.append(
+                {
+                    "object": "block",
+                    "type": "numbered_list_item",
+                    "numbered_list_item": {
+                        "rich_text": [
+                            {"type": "text", "text": {"content": stripped[2:].strip()}}
+                        ]
+                    },
+                }
+            )
         elif stripped in ("---", "***", "___"):
             blocks.append({"object": "block", "type": "divider", "divider": {}})
         else:
             text = stripped[:2000]
-            blocks.append({
-                "object": "block", "type": "paragraph",
-                "paragraph": {"rich_text": [{"type": "text", "text": {"content": text}}]},
-            })
+            blocks.append(
+                {
+                    "object": "block",
+                    "type": "paragraph",
+                    "paragraph": {
+                        "rich_text": [{"type": "text", "text": {"content": text}}]
+                    },
+                }
+            )
 
     return blocks[:100]
 
