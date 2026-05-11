@@ -24,8 +24,8 @@ USER_AGENT = "ai-news-monitor/2.0 (by /u/ai-news-bot)"
 MAX_POSTS = 20
 
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
-OPENROUTER_MODEL = os.environ.get("OPENROUTER_MODEL", "google/gemma-4-26b-a4b-it:free")
-DEFAULT_FALLBACK_MODELS = "deepseek/deepseek-r1:free,openrouter/free"
+OPENROUTER_MODEL = os.environ.get("OPENROUTER_MODEL", "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free")
+DEFAULT_FALLBACK_MODELS = "google/gemma-4-31b-it:free,openrouter/free"
 OPENROUTER_FALLBACK_MODELS = [
     model.strip()
     for model in os.environ.get("OPENROUTER_FALLBACK_MODELS", DEFAULT_FALLBACK_MODELS).split(",")
