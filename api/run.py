@@ -25,7 +25,7 @@ MAX_POSTS = 20
 
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 OPENROUTER_MODEL = os.environ.get("OPENROUTER_MODEL", "google/gemma-4-26b-a4b-it:free")
-DEFAULT_FALLBACK_MODELS = "deepseek/deepseek-r1:free,qwen/qwen-2.5-7b-instruct:free,openrouter/free"
+DEFAULT_FALLBACK_MODELS = "deepseek/deepseek-r1:free,openrouter/free"
 OPENROUTER_FALLBACK_MODELS = [
     model.strip()
     for model in os.environ.get("OPENROUTER_FALLBACK_MODELS", DEFAULT_FALLBACK_MODELS).split(",")
@@ -207,7 +207,7 @@ Start with a title: # AI Alpha - {date_str}
         {"role": "user", "content": prompt},
     ]
 
-    models = list(dict.fromkeys([OPENROUTER_MODEL, *OPENROUTER_FALLBACK_MODELS]))
+    models = list(dict.fromkeys([OPENROUTER_MODEL, *OPENROUTER_FALLBACK_MODELS]))[:3]
     payload = {
         "model": OPENROUTER_MODEL,
         "models": models,
