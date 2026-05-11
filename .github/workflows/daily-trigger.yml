@@ -27,7 +27,7 @@ jobs:
             -H "Content-Type: application/json" \
             -H "X-Webhook-Signature: $SIGNATURE" \
             -d "$BODY" \
-            --max-time 120)
+            --max-time 150)
 
           cat response.json
 

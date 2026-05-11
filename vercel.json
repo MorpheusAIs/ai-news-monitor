@@ -2,7 +2,7 @@
   "version": 2,
   "functions": {
     "api/run.py": {
-      "maxDuration": 60
+      "maxDuration": 120
     },
     "api/grok.py": {
       "maxDuration": 60

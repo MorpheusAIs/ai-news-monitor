@@ -8,7 +8,6 @@ import json
 import os
 import hmac
 import hashlib
-import time
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler
 
@@ -32,6 +31,7 @@ OPENROUTER_FALLBACK_MODELS = [
     for model in os.environ.get("OPENROUTER_FALLBACK_MODELS", DEFAULT_FALLBACK_MODELS).split(",")
     if model.strip()
 ]
+OPENROUTER_TIMEOUT_SECONDS = float(os.environ.get("OPENROUTER_TIMEOUT_SECONDS", "40"))
 
 DEFAULT_NOTION_DATABASE_ID = "21d90be5f44d80ffa169cbb40567085b"
 
@@ -208,51 +208,38 @@ Start with a title: # AI Alpha - {date_str}
     ]
 
     models = list(dict.fromkeys([OPENROUTER_MODEL, *OPENROUTER_FALLBACK_MODELS]))
-    failures: list[str] = []
+    payload = {
+        "model": OPENROUTER_MODEL,
+        "models": models,
+        "messages": messages,
+        "temperature": 0.7,
+        "max_tokens": 4000,
+    }
 
-    with httpx.Client(timeout=45.0) as client:
-        for index, model in enumerate(models):
-            fallback_chain = models[index:]
-            payload = {
-                "model": model,
-                "models": fallback_chain,
-                "messages": messages,
-                "temperature": 0.7,
-                "max_tokens": 4000,
-            }
+    with httpx.Client(timeout=OPENROUTER_TIMEOUT_SECONDS) as client:
+        resp = client.post(OPENROUTER_URL, headers=headers, json=payload)
+        try:
+            resp.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            retry_after = exc.response.headers.get("Retry-After")
+            detail = exc.response.text[:200]
+            if exc.response.status_code == 429 and retry_after:
+                detail = f"rate limited; retry after {retry_after}s; {detail}"
+            raise RuntimeError(
+                f"OpenRouter summary failed with HTTP {exc.response.status_code} using fallback chain {models}: {detail}"
+            ) from exc
 
-            for attempt in range(2):
-                resp = client.post(OPENROUTER_URL, headers=headers, json=payload)
-                if resp.status_code == 429 and attempt == 0:
-                    retry_after = resp.headers.get("Retry-After")
-                    delay = int(retry_after) if retry_after and retry_after.isdigit() else 5
-                    time.sleep(min(delay, 10))
-                    continue
+        data = resp.json()
 
-                if resp.status_code == 429:
-                    failures.append(f"{model}: 429 Too Many Requests")
-                    break
+    choices = data.get("choices", [])
+    if not choices:
+        raise RuntimeError(f"OpenRouter returned no choices: {json.dumps(data)[:200]}")
 
-                try:
-                    resp.raise_for_status()
-                except httpx.HTTPStatusError as exc:
-                    failures.append(f"{model}: HTTP {exc.response.status_code} {exc.response.text[:200]}")
-                    break
+    content = choices[0].get("message", {}).get("content", "")
+    if not content.strip():
+        raise RuntimeError("OpenRouter returned empty content")
 
-                data = resp.json()
-                choices = data.get("choices", [])
-                if not choices:
-                    failures.append(f"{model}: no choices ({json.dumps(data)[:200]})")
-                    break
-
-                content = choices[0].get("message", {}).get("content", "")
-                if content.strip():
-                    return content
-
-                failures.append(f"{model}: empty content")
-                break
-
-    raise RuntimeError(f"OpenRouter failed for all summary models: {'; '.join(failures)}")
+    return content
 
 
 # ---------------------------------------------------------------------------
@@ -369,6 +356,14 @@ def run_pipeline() -> dict:
     """Execute the full news monitoring pipeline. Returns status dict."""
     date_str = datetime.utcnow().strftime("%Y-%m-%d")
     log: list[str] = [f"Starting AI News Monitor run for {date_str}"]
+    skip_notion = os.environ.get("SKIP_NOTION", "").lower() == "true"
+    notion_key = os.environ.get("NOTION_API_KEY")
+    db_id = os.environ.get("NOTION_DATABASE_ID", DEFAULT_NOTION_DATABASE_ID)
+
+    if not skip_notion and notion_key and ai_alpha_page_exists(notion_key, db_id, date_str):
+        title = f"AI Alpha - {date_str}"
+        log.append(f"Skipped before generation: page '{title}' already exists")
+        return {"status": "ok", "date": date_str, "notion_url": f"SKIPPED: page '{title}' already exists", "log": log}
 
     # 1. Fetch
     all_posts = fetch_reddit_posts()
@@ -396,8 +391,6 @@ def run_pipeline() -> dict:
 
     # 5. Publish to Notion
     notion_url = ""
-    skip_notion = os.environ.get("SKIP_NOTION", "").lower() == "true"
-    notion_key = os.environ.get("NOTION_API_KEY")
 
     if skip_notion:
         log.append("Skipped Notion publishing (SKIP_NOTION=true)")

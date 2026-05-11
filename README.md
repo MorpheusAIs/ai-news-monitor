@@ -36,6 +36,7 @@ vercel env add NOTION_DATABASE_ID production   # optional
 | `OPENROUTER_API_KEY` | Yes | [OpenRouter](https://openrouter.ai/keys) API key |
 | `OPENROUTER_MODEL` | No | OpenRouter model for `/api/run`; defaults to `google/gemma-4-26b-a4b-it:free` |
 | `OPENROUTER_FALLBACK_MODELS` | No | Comma-separated free fallback models for `/api/run`; defaults to `deepseek/deepseek-r1:free,qwen/qwen-2.5-7b-instruct:free,openrouter/free` |
+| `OPENROUTER_TIMEOUT_SECONDS` | No | Timeout budget for the OpenRouter summary request; defaults to `40` |
 | `REDDIT_CLIENT_ID` | Yes | Reddit app client ID required by `/api/run` |
 | `REDDIT_CLIENT_SECRET` | Yes | Reddit app client secret required by `/api/run` |
 | `WEBHOOK_SECRET` | Yes | HMAC secret shared with GitHub Actions |
