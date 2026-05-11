@@ -8,6 +8,7 @@ import json
 import os
 import hmac
 import hashlib
+import time
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler
 
@@ -25,6 +26,12 @@ MAX_POSTS = 20
 
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 OPENROUTER_MODEL = os.environ.get("OPENROUTER_MODEL", "google/gemma-4-26b-a4b-it:free")
+DEFAULT_FALLBACK_MODELS = "deepseek/deepseek-r1:free,qwen/qwen-2.5-7b-instruct:free,openrouter/free"
+OPENROUTER_FALLBACK_MODELS = [
+    model.strip()
+    for model in os.environ.get("OPENROUTER_FALLBACK_MODELS", DEFAULT_FALLBACK_MODELS).split(",")
+    if model.strip()
+]
 
 DEFAULT_NOTION_DATABASE_ID = "21d90be5f44d80ffa169cbb40567085b"
 
@@ -188,37 +195,64 @@ Start with a title: # AI Alpha - {date_str}
         "X-Title": "AI News Monitor",
     }
 
-    payload = {
-        "model": OPENROUTER_MODEL,
-        "messages": [
-            {
-                "role": "system",
-                "content": (
-                    "You are an AI news analyst specializing in AI/ML developments. "
-                    "Focus on accuracy, technical depth, and actionable insights. "
-                    "Format all output as clean markdown."
-                ),
-            },
-            {"role": "user", "content": prompt},
-        ],
-        "temperature": 0.7,
-        "max_tokens": 4000,
-    }
+    messages = [
+        {
+            "role": "system",
+            "content": (
+                "You are an AI news analyst specializing in AI/ML developments. "
+                "Focus on accuracy, technical depth, and actionable insights. "
+                "Format all output as clean markdown."
+            ),
+        },
+        {"role": "user", "content": prompt},
+    ]
 
-    with httpx.Client(timeout=55.0) as client:
-        resp = client.post(OPENROUTER_URL, headers=headers, json=payload)
-        resp.raise_for_status()
-        data = resp.json()
+    models = list(dict.fromkeys([OPENROUTER_MODEL, *OPENROUTER_FALLBACK_MODELS]))
+    failures: list[str] = []
 
-    choices = data.get("choices", [])
-    if not choices:
-        raise RuntimeError(f"OpenRouter returned no choices: {json.dumps(data)}")
+    with httpx.Client(timeout=45.0) as client:
+        for index, model in enumerate(models):
+            fallback_chain = models[index:]
+            payload = {
+                "model": model,
+                "models": fallback_chain,
+                "messages": messages,
+                "temperature": 0.7,
+                "max_tokens": 4000,
+            }
 
-    content = choices[0].get("message", {}).get("content", "")
-    if not content.strip():
-        raise RuntimeError("OpenRouter returned empty content")
+            for attempt in range(2):
+                resp = client.post(OPENROUTER_URL, headers=headers, json=payload)
+                if resp.status_code == 429 and attempt == 0:
+                    retry_after = resp.headers.get("Retry-After")
+                    delay = int(retry_after) if retry_after and retry_after.isdigit() else 5
+                    time.sleep(min(delay, 10))
+                    continue
 
-    return content
+                if resp.status_code == 429:
+                    failures.append(f"{model}: 429 Too Many Requests")
+                    break
+
+                try:
+                    resp.raise_for_status()
+                except httpx.HTTPStatusError as exc:
+                    failures.append(f"{model}: HTTP {exc.response.status_code} {exc.response.text[:200]}")
+                    break
+
+                data = resp.json()
+                choices = data.get("choices", [])
+                if not choices:
+                    failures.append(f"{model}: no choices ({json.dumps(data)[:200]})")
+                    break
+
+                content = choices[0].get("message", {}).get("content", "")
+                if content.strip():
+                    return content
+
+                failures.append(f"{model}: empty content")
+                break
+
+    raise RuntimeError(f"OpenRouter failed for all summary models: {'; '.join(failures)}")
 
 
 # ---------------------------------------------------------------------------
