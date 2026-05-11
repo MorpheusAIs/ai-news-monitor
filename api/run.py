@@ -24,7 +24,7 @@ USER_AGENT = "ai-news-monitor/2.0 (by /u/ai-news-bot)"
 MAX_POSTS = 20
 
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
-OPENROUTER_MODEL = "stepfun/step-3.5-flash:free"
+OPENROUTER_MODEL = os.environ.get("OPENROUTER_MODEL", "x-ai/grok-4.1-fast")
 
 DEFAULT_NOTION_DATABASE_ID = "21d90be5f44d80ffa169cbb40567085b"
 

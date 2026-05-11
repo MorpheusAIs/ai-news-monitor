@@ -1,13 +1,13 @@
 # AI News Monitor
 
-Automated daily AI/LLM news aggregator deployed as a Vercel serverless function. Monitors Reddit communities, filters relevant content, and generates actionable summaries using OpenRouter (StepFun Step 3.5 Flash).
+Automated daily AI/LLM news aggregator deployed as a Vercel serverless function. Monitors Reddit communities, filters relevant content, and generates actionable summaries using OpenRouter.
 
 ## How It Works
 
 1. GitHub Actions cron job fires a webhook POST to Vercel daily at 9 AM UTC
 2. Vercel serverless function fetches posts from a curated Reddit multireddit
 3. Posts are filtered (no memes/images) and ranked by engagement
-4. OpenRouter generates a structured markdown summary via `stepfun/step-3.5-flash:free`
+4. OpenRouter generates a structured markdown summary via `OPENROUTER_MODEL` or the default `x-ai/grok-4.1-fast`
 5. Summary is published to a Notion database
 
 ## Setup
@@ -34,6 +34,7 @@ vercel env add NOTION_DATABASE_ID production   # optional
 | Variable | Required | Description |
 |----------|----------|-------------|
 | `OPENROUTER_API_KEY` | Yes | [OpenRouter](https://openrouter.ai/keys) API key |
+| `OPENROUTER_MODEL` | No | OpenRouter model for `/api/run`; defaults to `x-ai/grok-4.1-fast` |
 | `REDDIT_CLIENT_ID` | Yes | Reddit app client ID required by `/api/run` |
 | `REDDIT_CLIENT_SECRET` | Yes | Reddit app client secret required by `/api/run` |
 | `WEBHOOK_SECRET` | Yes | HMAC secret shared with GitHub Actions |
