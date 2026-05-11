@@ -303,8 +303,8 @@ def markdown_to_notion_blocks(md: str) -> list[dict]:
     return blocks[:100]  # Notion limit
 
 
-def notion_page_exists_for_date(api_key: str, db_id: str, date_str: str) -> bool:
-    """Check if a page with this date already exists (raw API call)."""
+def ai_alpha_page_exists(api_key: str, db_id: str, date_str: str) -> bool:
+    """Check if the AI Alpha page for this date already exists."""
     with httpx.Client(timeout=15.0) as client:
         resp = client.post(
             f"https://api.notion.com/v1/databases/{db_id}/query",
@@ -313,7 +313,15 @@ def notion_page_exists_for_date(api_key: str, db_id: str, date_str: str) -> bool
                 "Notion-Version": "2022-06-28",
                 "Content-Type": "application/json",
             },
-            json={"filter": {"property": "datetime", "date": {"equals": date_str}}, "page_size": 1},
+            json={
+                "filter": {
+                    "and": [
+                        {"property": "datetime", "date": {"equals": date_str}},
+                        {"property": "Title", "title": {"contains": "AI Alpha"}},
+                    ]
+                },
+                "page_size": 1,
+            },
         )
         resp.raise_for_status()
         return len(resp.json().get("results", [])) > 0
@@ -329,8 +337,8 @@ def publish_to_notion(content: str, date_str: str) -> str:
     title = f"AI Alpha - {date_str}"
     notion = NotionClient(auth=api_key)
 
-    if notion_page_exists_for_date(api_key, db_id, date_str):
-        return f"SKIPPED: page for {date_str} already exists"
+    if ai_alpha_page_exists(api_key, db_id, date_str):
+        return f"SKIPPED: page '{title}' already exists"
 
     blocks = markdown_to_notion_blocks(content)
 
