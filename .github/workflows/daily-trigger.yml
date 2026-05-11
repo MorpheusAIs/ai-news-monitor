@@ -11,11 +11,27 @@ jobs:
     steps:
       - name: Trigger Vercel webhook
         run: |
+          BASE_WEBHOOK_URL="${{ secrets.GROK_WEBHOOK_URL }}"
+          BASE_WEBHOOK_URL="${BASE_WEBHOOK_URL%/}"
+          WEBHOOK_URL="${BASE_WEBHOOK_URL%/api/grok}/api/run"
+
+          if [ -z "$BASE_WEBHOOK_URL" ] || [ "$WEBHOOK_URL" = "/api/run" ]; then
+            echo "GROK_WEBHOOK_URL must be configured so the daily AI news trigger can target the same Vercel deployment as the working Grok workflow."
+            exit 1
+          fi
+
           BODY='{"trigger":"github-cron","timestamp":"'"$(date -u +%Y-%m-%dT%H:%M:%SZ)"'"}'
           SIGNATURE="sha256=$(echo -n "$BODY" | openssl dgst -sha256 -hmac "${{ secrets.WEBHOOK_SECRET }}" | awk '{print $2}')"
 
-          curl -sf -X POST "${{ secrets.WEBHOOK_URL }}" \
+          HTTP_STATUS=$(curl -sS -o response.json -w "%{http_code}" -X POST "$WEBHOOK_URL" \
             -H "Content-Type: application/json" \
             -H "X-Webhook-Signature: $SIGNATURE" \
             -d "$BODY" \
-            --max-time 120
+            --max-time 120)
+
+          cat response.json
+
+          if [ "$HTTP_STATUS" -lt 200 ] || [ "$HTTP_STATUS" -ge 300 ]; then
+            echo "Webhook failed with HTTP $HTTP_STATUS"
+            exit 1
+          fi

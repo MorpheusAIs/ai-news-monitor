@@ -24,6 +24,8 @@ Via Vercel CLI or dashboard:
 
 ```bash
 vercel env add OPENROUTER_API_KEY production
+vercel env add REDDIT_CLIENT_ID production
+vercel env add REDDIT_CLIENT_SECRET production
 vercel env add WEBHOOK_SECRET production
 vercel env add NOTION_API_KEY production       # optional
 vercel env add NOTION_DATABASE_ID production   # optional
@@ -32,6 +34,8 @@ vercel env add NOTION_DATABASE_ID production   # optional
 | Variable | Required | Description |
 |----------|----------|-------------|
 | `OPENROUTER_API_KEY` | Yes | [OpenRouter](https://openrouter.ai/keys) API key |
+| `REDDIT_CLIENT_ID` | Yes | Reddit app client ID required by `/api/run` |
+| `REDDIT_CLIENT_SECRET` | Yes | Reddit app client secret required by `/api/run` |
 | `WEBHOOK_SECRET` | Yes | HMAC secret shared with GitHub Actions |
 | `NOTION_API_KEY` | No | [Notion integration](https://www.notion.so/my-integrations) token |
 | `NOTION_DATABASE_ID` | No | Target Notion database ID (has default) |
@@ -41,7 +45,7 @@ vercel env add NOTION_DATABASE_ID production   # optional
 
 In your repo settings, add:
 
-- `WEBHOOK_URL` — Your Vercel function URL (e.g. `https://ai-news-monitor.vercel.app/api/run`)
+- `GROK_WEBHOOK_URL` — Your Grok function URL on the same Vercel deployment (e.g. `https://ai-news-monitor.vercel.app/api/grok`); both workflows use this as the canonical deployment URL, and the daily AI news workflow derives `/api/run` from it
 - `WEBHOOK_SECRET` — Same secret used in Vercel env vars
 
 ### 4. Generate a Webhook Secret
