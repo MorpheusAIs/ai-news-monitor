@@ -1,7 +1,7 @@
 """
 Grok Alpha - Vercel Serverless Function
 Standalone endpoint for Grok-powered AI & Tech news research.
-Uses x-ai/grok-4.1-fast via OpenRouter with reasoning_effort=medium.
+Uses x-ai/grok-4.1-fast via OpenRouter with reasoning enabled.
 No Reddit dependency — Grok performs its own research.
 """
 
@@ -11,9 +11,9 @@ import hmac
 import hashlib
 from datetime import datetime, timedelta
 from http.server import BaseHTTPRequestHandler
+from typing import Any
 
 import httpx
-from notion_client import Client as NotionClient
 
 
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
@@ -73,7 +73,7 @@ def generate_grok_report(date_str: str) -> str:
             "to_date": end_date.strftime("%Y-%m-%d"),
         },
         "reasoning": {
-            "effort": "medium",
+            "enabled": True,
         },
         "temperature": 0.7,
         "max_tokens": 8000,
@@ -95,8 +95,8 @@ def generate_grok_report(date_str: str) -> str:
     return content
 
 
-def markdown_to_notion_blocks(md: str) -> list[dict]:
-    blocks: list[dict] = []
+def markdown_to_notion_blocks(md: str) -> list[dict[str, Any]]:
+    blocks: list[dict[str, Any]] = []
     for line in md.split("\n"):
         stripped = line.strip()
         if not stripped:
@@ -209,22 +209,33 @@ def publish_to_notion(content: str, date_str: str) -> str:
 
     db_id = os.environ.get("NOTION_DATABASE_ID", DEFAULT_NOTION_DATABASE_ID)
     title = f"Grok Alpha - {date_str}"
-    notion = NotionClient(auth=api_key)
-
     if grok_page_exists(api_key, db_id, date_str):
         return f"SKIPPED: page '{title}' already exists"
 
     blocks = markdown_to_notion_blocks(content)
 
-    page = notion.pages.create(
-        parent={"database_id": db_id},
-        properties={
-            "Title": {"title": [{"text": {"content": title}}]},
-            "datetime": {"date": {"start": date_str}},
-        },
-        children=blocks,
-    )
-    return page.get("url", "")
+    with httpx.Client(timeout=15.0) as client:
+        resp = client.post(
+            "https://api.notion.com/v1/pages",
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Notion-Version": "2022-06-28",
+                "Content-Type": "application/json",
+            },
+            json={
+                "parent": {"database_id": db_id},
+                "properties": {
+                    "Title": {"title": [{"text": {"content": title}}]},
+                    "datetime": {"date": {"start": date_str}},
+                },
+                "children": blocks,
+            },
+        )
+        resp.raise_for_status()
+        page = resp.json()
+
+    url = page.get("url", "")
+    return url if isinstance(url, str) else ""
 
 
 def verify_webhook(secret: str, body: bytes, signature: str) -> bool:
@@ -232,12 +243,12 @@ def verify_webhook(secret: str, body: bytes, signature: str) -> bool:
     return hmac.compare_digest(f"sha256={expected}", signature)
 
 
-def run_grok_pipeline() -> dict:
+def run_grok_pipeline() -> dict[str, Any]:
     date_str = datetime.utcnow().strftime("%Y-%m-%d")
     log: list[str] = [f"Starting Grok Alpha run for {date_str}"]
 
     report = generate_grok_report(date_str)
-    log.append(f"Generated Grok report (reasoning=medium): {len(report)} chars")
+    log.append(f"Generated Grok report (reasoning enabled): {len(report)} chars")
 
     notion_url = ""
     skip_notion = os.environ.get("SKIP_NOTION", "").lower() == "true"
