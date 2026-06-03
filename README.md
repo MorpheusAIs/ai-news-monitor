@@ -29,6 +29,7 @@ vercel env add REDDIT_CLIENT_SECRET production
 vercel env add WEBHOOK_SECRET production
 vercel env add NOTION_API_KEY production       # optional
 vercel env add NOTION_DATABASE_ID production   # optional
+vercel env add GROK_MODEL production           # optional
 ```
 
 | Variable | Required | Description |
@@ -37,6 +38,9 @@ vercel env add NOTION_DATABASE_ID production   # optional
 | `OPENROUTER_MODEL` | No | OpenRouter model for `/api/run`; defaults to `nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free` |
 | `OPENROUTER_FALLBACK_MODELS` | No | Comma-separated free fallback models for `/api/run`; defaults to `google/gemma-4-31b-it:free,openrouter/free`; OpenRouter allows at most 3 models including the primary |
 | `OPENROUTER_TIMEOUT_SECONDS` | No | Timeout budget for the OpenRouter summary request; defaults to `40` |
+| `GROK_MODEL` | No | OpenRouter model for `/api/grok`; defaults to `x-ai/grok-4.1` |
+| `GROK_FALLBACK_MODELS` | No | Comma-separated fallback models for `/api/grok`; defaults to `x-ai/grok-4.1-fast`; OpenRouter allows at most 3 models including the primary |
+| `GROK_TIMEOUT_SECONDS` | No | Timeout budget for the Grok report request; defaults to `55` |
 | `REDDIT_CLIENT_ID` | Yes | Reddit app client ID required by `/api/run` |
 | `REDDIT_CLIENT_SECRET` | Yes | Reddit app client secret required by `/api/run` |
 | `WEBHOOK_SECRET` | Yes | HMAC secret shared with GitHub Actions |
@@ -48,7 +52,8 @@ vercel env add NOTION_DATABASE_ID production   # optional
 
 In your repo settings, add:
 
-- `GROK_WEBHOOK_URL` — Your Grok function URL on the same Vercel deployment (e.g. `https://ai-news-monitor.vercel.app/api/grok`); both workflows use this as the canonical deployment URL, and the daily AI news workflow derives `/api/run` from it
+- `GROK_WEBHOOK_URL` — Your Grok function URL on the same Vercel deployment (e.g. `https://ai-news-monitor.vercel.app/api/grok`); the Grok workflow posts to this directly, and the daily AI news workflow can derive `/api/run` from it
+- `WEBHOOK_URL` — Optional direct AI Alpha function URL (e.g. `https://ai-news-monitor.vercel.app/api/run`); if set, the daily AI news workflow uses this instead of deriving it from `GROK_WEBHOOK_URL`
 - `WEBHOOK_SECRET` — Same secret used in Vercel env vars
 
 ### 4. Generate a Webhook Secret
