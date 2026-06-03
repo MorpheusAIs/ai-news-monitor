@@ -51,15 +51,15 @@ class PipelineFailureTests(unittest.TestCase):
 
         env = {
             "OPENROUTER_API_KEY": "openrouter-token",
-            "GROK_MODEL": "x-ai/grok-4.1",
-            "GROK_FALLBACK_MODELS": "x-ai/grok-4.1-fast,x-ai/grok-4.1",
+            "GROK_MODEL": "x-ai/grok-4.3",
+            "GROK_FALLBACK_MODELS": "x-ai/grok-4.20,x-ai/grok-4.3",
         }
         with patch.dict(os.environ, env, clear=False), patch.object(grok.httpx, "Client", FakeClient):
             report = grok.generate_grok_report("2026-06-03")
 
         self.assertEqual(report, "# Grok Alpha - 2026-06-03")
-        self.assertEqual(captured_payload["model"], "x-ai/grok-4.1")
-        self.assertEqual(captured_payload["models"], ["x-ai/grok-4.1", "x-ai/grok-4.1-fast"])
+        self.assertEqual(captured_payload["model"], "x-ai/grok-4.3")
+        self.assertEqual(captured_payload["models"], ["x-ai/grok-4.3", "x-ai/grok-4.20"])
 
     def test_ai_alpha_summary_rejects_null_openrouter_content(self):
         class FakeResponse:

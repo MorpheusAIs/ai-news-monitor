@@ -17,8 +17,8 @@ import httpx
 
 
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
-DEFAULT_GROK_MODEL = "x-ai/grok-4.1"
-DEFAULT_GROK_FALLBACK_MODELS = "x-ai/grok-4.1-fast"
+DEFAULT_GROK_MODEL = "x-ai/grok-4.3"
+DEFAULT_GROK_FALLBACK_MODELS = "x-ai/grok-4.20"
 GROK_TIMEOUT_SECONDS = float(os.environ.get("GROK_TIMEOUT_SECONDS", "55"))
 DEFAULT_NOTION_DATABASE_ID = "21d90be5f44d80ffa169cbb40567085b"
 

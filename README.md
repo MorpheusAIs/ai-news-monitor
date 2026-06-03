@@ -38,8 +38,8 @@ vercel env add GROK_MODEL production           # optional
 | `OPENROUTER_MODEL` | No | OpenRouter model for `/api/run`; defaults to `nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free` |
 | `OPENROUTER_FALLBACK_MODELS` | No | Comma-separated free fallback models for `/api/run`; defaults to `google/gemma-4-31b-it:free,openrouter/free`; OpenRouter allows at most 3 models including the primary |
 | `OPENROUTER_TIMEOUT_SECONDS` | No | Timeout budget for the OpenRouter summary request; defaults to `40` |
-| `GROK_MODEL` | No | OpenRouter model for `/api/grok`; defaults to `x-ai/grok-4.1` |
-| `GROK_FALLBACK_MODELS` | No | Comma-separated fallback models for `/api/grok`; defaults to `x-ai/grok-4.1-fast`; OpenRouter allows at most 3 models including the primary |
+| `GROK_MODEL` | No | OpenRouter model for `/api/grok`; defaults to `x-ai/grok-4.3` |
+| `GROK_FALLBACK_MODELS` | No | Comma-separated fallback models for `/api/grok`; defaults to `x-ai/grok-4.20`; OpenRouter allows at most 3 models including the primary |
 | `GROK_TIMEOUT_SECONDS` | No | Timeout budget for the Grok report request; defaults to `55` |
 | `REDDIT_CLIENT_ID` | Yes | Reddit app client ID required by `/api/run` |
 | `REDDIT_CLIENT_SECRET` | Yes | Reddit app client secret required by `/api/run` |
