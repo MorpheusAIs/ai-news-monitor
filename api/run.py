@@ -12,7 +12,6 @@ from datetime import datetime
 from http.server import BaseHTTPRequestHandler
 
 import httpx
-from notion_client import Client as NotionClient
 
 
 # ---------------------------------------------------------------------------
@@ -43,6 +42,26 @@ RELEVANT_TAGS = [
 ]
 
 
+def get_text_value(data: dict[str, object], key: str, default: str = "") -> str:
+    value = data.get(key, default)
+    return value if isinstance(value, str) else default
+
+
+def get_int_value(data: dict[str, object], key: str, default: int = 0) -> int:
+    value = data.get(key, default)
+    return value if isinstance(value, int) else default
+
+
+def raise_notion_error(resp: httpx.Response, action: str) -> None:
+    try:
+        resp.raise_for_status()
+    except httpx.HTTPStatusError as exc:
+        detail = exc.response.text[:500]
+        raise RuntimeError(
+            f"Notion {action} failed with HTTP {exc.response.status_code}: {detail}"
+        ) from exc
+
+
 # ---------------------------------------------------------------------------
 # Reddit helpers
 # ---------------------------------------------------------------------------
@@ -64,7 +83,7 @@ def _get_reddit_token() -> str:
         return resp.json()["access_token"]
 
 
-def fetch_reddit_posts() -> list[dict]:
+def fetch_reddit_posts() -> list[dict[str, object]]:
     """Fetch posts from the Reddit multireddit via OAuth."""
     token = _get_reddit_token()
     with httpx.Client(timeout=30.0) as client:
@@ -82,7 +101,7 @@ def fetch_reddit_posts() -> list[dict]:
     return [child["data"] for child in data.get("data", {}).get("children", [])]
 
 
-def filter_relevant_posts(posts: list[dict]) -> list[dict]:
+def filter_relevant_posts(posts: list[dict[str, object]]) -> list[dict[str, object]]:
     """Remove image/video/meme posts, keep text and link posts."""
     image_domains = {
         "i.redd.it", "i.imgur.com", "imgur.com", "gfycat.com",
@@ -94,12 +113,12 @@ def filter_relevant_posts(posts: list[dict]) -> list[dict]:
     for p in posts:
         if p.get("is_video"):
             continue
-        domain = p.get("domain", "")
+        domain = get_text_value(p, "domain")
         if any(d in domain for d in image_domains):
             continue
-        if p.get("post_hint", "") in ("image", "hosted:video", "rich:video"):
+        if get_text_value(p, "post_hint") in ("image", "hosted:video", "rich:video"):
             continue
-        flair = (p.get("link_flair_text") or "").lower()
+        flair = get_text_value(p, "link_flair_text").lower()
         if any(m in flair for m in meme_flair):
             continue
         if p.get("is_gallery"):
@@ -109,32 +128,32 @@ def filter_relevant_posts(posts: list[dict]) -> list[dict]:
     return filtered
 
 
-def rank_posts(posts: list[dict]) -> list[dict]:
+def rank_posts(posts: list[dict[str, object]]) -> list[dict[str, object]]:
     """Sort by engagement: upvotes + 2*comments."""
     return sorted(
         posts,
-        key=lambda p: p.get("ups", 0) + p.get("num_comments", 0) * 2,
+        key=lambda p: get_int_value(p, "ups") + get_int_value(p, "num_comments") * 2,
         reverse=True,
     )
 
 
-def extract_tags(post: dict) -> list[str]:
+def extract_tags(post: dict[str, object]) -> list[str]:
     """Find relevant tags in title + selftext."""
-    text = f"{post.get('title', '')} {post.get('selftext', '')}".lower()
+    text = f"{get_text_value(post, 'title')} {get_text_value(post, 'selftext')}".lower()
     return list({t for t in RELEVANT_TAGS if t in text})
 
 
-def prepare_posts_text(posts: list[dict], max_posts: int = MAX_POSTS) -> str:
+def prepare_posts_text(posts: list[dict[str, object]], max_posts: int = MAX_POSTS) -> str:
     """Format top posts as markdown for the LLM prompt."""
     lines: list[str] = []
     for i, p in enumerate(posts[:max_posts], 1):
-        title = p.get("title", "No title")
-        url = f"https://reddit.com{p.get('permalink', '')}"
-        selftext = p.get("selftext", "")[:500]
-        ups = p.get("ups", 0)
-        comments = p.get("num_comments", 0)
-        ext_url = p.get("url", "")
-        subreddit = p.get("subreddit", "")
+        title = get_text_value(p, "title", "No title")
+        url = f"https://reddit.com{get_text_value(p, 'permalink')}"
+        selftext = get_text_value(p, "selftext")[:500]
+        ups = get_int_value(p, "ups")
+        comments = get_int_value(p, "num_comments")
+        ext_url = get_text_value(p, "url")
+        subreddit = get_text_value(p, "subreddit")
         tags = extract_tags(p)
 
         lines.append(f"""
@@ -236,7 +255,7 @@ Start with a title: # AI Alpha - {date_str}
         raise RuntimeError(f"OpenRouter returned no choices: {json.dumps(data)[:200]}")
 
     content = choices[0].get("message", {}).get("content", "")
-    if not content.strip():
+    if not isinstance(content, str) or not content.strip():
         raise RuntimeError("OpenRouter returned empty content")
 
     return content
@@ -245,9 +264,9 @@ Start with a title: # AI Alpha - {date_str}
 # ---------------------------------------------------------------------------
 # Notion publishing
 # ---------------------------------------------------------------------------
-def markdown_to_notion_blocks(md: str) -> list[dict]:
+def markdown_to_notion_blocks(md: str) -> list[dict[str, object]]:
     """Convert markdown to Notion blocks (simplified)."""
-    blocks: list[dict] = []
+    blocks: list[dict[str, object]] = []
     for line in md.split("\n"):
         stripped = line.strip()
         if not stripped:
@@ -310,7 +329,7 @@ def ai_alpha_page_exists(api_key: str, db_id: str, date_str: str) -> bool:
                 "page_size": 1,
             },
         )
-        resp.raise_for_status()
+        raise_notion_error(resp, "database query")
         return len(resp.json().get("results", [])) > 0
 
 
@@ -322,22 +341,34 @@ def publish_to_notion(content: str, date_str: str) -> str:
 
     db_id = os.environ.get("NOTION_DATABASE_ID", DEFAULT_NOTION_DATABASE_ID)
     title = f"AI Alpha - {date_str}"
-    notion = NotionClient(auth=api_key)
 
     if ai_alpha_page_exists(api_key, db_id, date_str):
         return f"SKIPPED: page '{title}' already exists"
 
     blocks = markdown_to_notion_blocks(content)
 
-    page = notion.pages.create(
-        parent={"database_id": db_id},
-        properties={
-            "Title": {"title": [{"text": {"content": title}}]},
-            "datetime": {"date": {"start": date_str}},
-        },
-        children=blocks,
-    )
-    return page.get("url", "")
+    with httpx.Client(timeout=15.0) as client:
+        resp = client.post(
+            "https://api.notion.com/v1/pages",
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Notion-Version": "2022-06-28",
+                "Content-Type": "application/json",
+            },
+            json={
+                "parent": {"database_id": db_id},
+                "properties": {
+                    "Title": {"title": [{"text": {"content": title}}]},
+                    "datetime": {"date": {"start": date_str}},
+                },
+                "children": blocks,
+            },
+        )
+        raise_notion_error(resp, "page create")
+        page = resp.json()
+
+    url = page.get("url", "")
+    return url if isinstance(url, str) else ""
 
 
 # ---------------------------------------------------------------------------
@@ -352,7 +383,7 @@ def verify_webhook(secret: str, body: bytes, signature: str) -> bool:
 # ---------------------------------------------------------------------------
 # Main pipeline
 # ---------------------------------------------------------------------------
-def run_pipeline() -> dict:
+def run_pipeline() -> dict[str, object]:
     """Execute the full news monitoring pipeline. Returns status dict."""
     date_str = datetime.utcnow().strftime("%Y-%m-%d")
     log: list[str] = [f"Starting AI News Monitor run for {date_str}"]
@@ -382,7 +413,7 @@ def run_pipeline() -> dict:
     # 3. Rank
     ranked = rank_posts(relevant)
     if ranked:
-        log.append(f"Top post: {ranked[0].get('title', '?')[:60]}")
+        log.append(f"Top post: {get_text_value(ranked[0], 'title', '?')[:60]}")
 
     # 4. Generate summary
     posts_data = prepare_posts_text(ranked)
@@ -402,6 +433,7 @@ def run_pipeline() -> dict:
             log.append(f"Published to Notion: {notion_url}")
         except Exception as exc:
             log.append(f"Notion publishing failed: {exc}")
+            raise RuntimeError(f"Notion publishing failed: {exc}") from exc
 
     return {
         "status": "ok",

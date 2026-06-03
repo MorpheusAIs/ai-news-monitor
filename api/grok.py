@@ -17,14 +17,34 @@ import httpx
 
 
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
-GROK_MODEL = "x-ai/grok-4.1-fast"
+DEFAULT_GROK_MODEL = "x-ai/grok-4.1"
+DEFAULT_GROK_FALLBACK_MODELS = "x-ai/grok-4.1-fast"
+GROK_TIMEOUT_SECONDS = float(os.environ.get("GROK_TIMEOUT_SECONDS", "55"))
 DEFAULT_NOTION_DATABASE_ID = "21d90be5f44d80ffa169cbb40567085b"
+
+
+def raise_notion_error(resp: httpx.Response, action: str) -> None:
+    try:
+        resp.raise_for_status()
+    except httpx.HTTPStatusError as exc:
+        detail = exc.response.text[:500]
+        raise RuntimeError(
+            f"Notion {action} failed with HTTP {exc.response.status_code}: {detail}"
+        ) from exc
 
 
 def generate_grok_report(date_str: str) -> str:
     api_key = os.environ.get("OPENROUTER_API_KEY")
     if not api_key:
         raise RuntimeError("OPENROUTER_API_KEY not set")
+
+    primary_model = os.environ.get("GROK_MODEL", DEFAULT_GROK_MODEL).strip() or DEFAULT_GROK_MODEL
+    fallback_models = [
+        model.strip()
+        for model in os.environ.get("GROK_FALLBACK_MODELS", DEFAULT_GROK_FALLBACK_MODELS).split(",")
+        if model.strip()
+    ]
+    models = list(dict.fromkeys([primary_model, *fallback_models]))[:3]
 
     end_date = datetime.strptime(date_str, "%Y-%m-%d")
     start_date = end_date - timedelta(days=1)
@@ -51,7 +71,8 @@ def generate_grok_report(date_str: str) -> str:
     }
 
     payload = {
-        "model": GROK_MODEL,
+        "model": primary_model,
+        "models": models,
         "messages": [
             {
                 "role": "system",
@@ -79,9 +100,15 @@ def generate_grok_report(date_str: str) -> str:
         "max_tokens": 8000,
     }
 
-    with httpx.Client(timeout=55.0) as client:
+    with httpx.Client(timeout=GROK_TIMEOUT_SECONDS) as client:
         resp = client.post(OPENROUTER_URL, headers=headers, json=payload)
-        resp.raise_for_status()
+        try:
+            resp.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            detail = exc.response.text[:200]
+            raise RuntimeError(
+                f"OpenRouter Grok report failed with HTTP {exc.response.status_code} using fallback chain {models}: {detail}"
+            ) from exc
         data = resp.json()
 
     choices = data.get("choices", [])
@@ -89,7 +116,7 @@ def generate_grok_report(date_str: str) -> str:
         raise RuntimeError(f"OpenRouter returned no choices: {json.dumps(data)}")
 
     content = choices[0].get("message", {}).get("content", "")
-    if not content.strip():
+    if not isinstance(content, str) or not content.strip():
         raise RuntimeError("OpenRouter returned empty content")
 
     return content
@@ -198,7 +225,7 @@ def grok_page_exists(api_key: str, db_id: str, date_str: str) -> bool:
                 "page_size": 1,
             },
         )
-        resp.raise_for_status()
+        raise_notion_error(resp, "database query")
         return len(resp.json().get("results", [])) > 0
 
 
@@ -231,7 +258,7 @@ def publish_to_notion(content: str, date_str: str) -> str:
                 "children": blocks,
             },
         )
-        resp.raise_for_status()
+        raise_notion_error(resp, "page create")
         page = resp.json()
 
     url = page.get("url", "")
@@ -264,6 +291,7 @@ def run_grok_pipeline() -> dict[str, Any]:
             log.append(f"Published to Notion: {notion_url}")
         except Exception as exc:
             log.append(f"Notion publishing failed: {exc}")
+            raise RuntimeError(f"Notion publishing failed: {exc}") from exc
 
     return {
         "status": "ok",
