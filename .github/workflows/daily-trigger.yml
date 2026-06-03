@@ -11,12 +11,19 @@ jobs:
     steps:
       - name: Trigger Vercel webhook
         run: |
+          DIRECT_WEBHOOK_URL="${{ secrets.WEBHOOK_URL }}"
           BASE_WEBHOOK_URL="${{ secrets.GROK_WEBHOOK_URL }}"
+          DIRECT_WEBHOOK_URL="${DIRECT_WEBHOOK_URL%/}"
           BASE_WEBHOOK_URL="${BASE_WEBHOOK_URL%/}"
-          WEBHOOK_URL="${BASE_WEBHOOK_URL%/api/grok}/api/run"
 
-          if [ -z "$BASE_WEBHOOK_URL" ] || [ "$WEBHOOK_URL" = "/api/run" ]; then
-            echo "GROK_WEBHOOK_URL must be configured so the daily AI news trigger can target the same Vercel deployment as the working Grok workflow."
+          if [ -n "$DIRECT_WEBHOOK_URL" ]; then
+            WEBHOOK_URL="$DIRECT_WEBHOOK_URL"
+          else
+            WEBHOOK_URL="${BASE_WEBHOOK_URL%/api/grok}/api/run"
+          fi
+
+          if [ -z "$WEBHOOK_URL" ] || [ "$WEBHOOK_URL" = "/api/run" ]; then
+            echo "WEBHOOK_URL or GROK_WEBHOOK_URL must be configured so the daily AI news trigger can target the Vercel deployment."
             exit 1
           fi
 
