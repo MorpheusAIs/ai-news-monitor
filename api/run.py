@@ -8,8 +8,12 @@ import json
 import os
 import hmac
 import hashlib
+import html
+import re
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler
+from urllib.parse import urlparse
+import xml.etree.ElementTree as ET
 
 import httpx
 
@@ -18,8 +22,10 @@ import httpx
 # Configuration
 # ---------------------------------------------------------------------------
 REDDIT_MULTIREDDIT = "https://oauth.reddit.com/user/bowtiedswan/m/aillms.json"
+REDDIT_PUBLIC_MULTIREDDIT = "https://www.reddit.com/user/bowtiedswan/m/aillms.json"
+REDDIT_RSS_MULTIREDDIT = "https://www.reddit.com/user/bowtiedswan/m/aillms/.rss"
 REDDIT_TOKEN_URL = "https://www.reddit.com/api/v1/access_token"
-USER_AGENT = "ai-news-monitor/2.0 (by /u/ai-news-bot)"
+USER_AGENT = "Mozilla/5.0 (compatible; ai-news-monitor/2.0; +https://github.com/MorpheusAIs/ai-news-monitor)"
 MAX_POSTS = 20
 
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
@@ -85,20 +91,102 @@ def _get_reddit_token() -> str:
 
 def fetch_reddit_posts() -> list[dict[str, object]]:
     """Fetch posts from the Reddit multireddit via OAuth."""
-    token = _get_reddit_token()
-    with httpx.Client(timeout=30.0) as client:
-        resp = client.get(
-            REDDIT_MULTIREDDIT,
-            headers={
-                "Authorization": f"Bearer {token}",
-                "User-Agent": USER_AGENT,
-            },
-            follow_redirects=True,
-        )
-        resp.raise_for_status()
-        data = resp.json()
+    oauth_error: Exception | None = None
+    try:
+        token = _get_reddit_token()
+        with httpx.Client(timeout=30.0) as client:
+            resp = client.get(
+                REDDIT_MULTIREDDIT,
+                headers={
+                    "Authorization": f"Bearer {token}",
+                    "User-Agent": USER_AGENT,
+                },
+                follow_redirects=True,
+            )
+            resp.raise_for_status()
+            return parse_reddit_listing(resp.json())
+    except httpx.HTTPError as exc:
+        oauth_error = exc
 
-    return [child["data"] for child in data.get("data", {}).get("children", [])]
+    try:
+        with httpx.Client(timeout=30.0, headers={"User-Agent": USER_AGENT}, follow_redirects=True) as client:
+            resp = client.get(REDDIT_PUBLIC_MULTIREDDIT, params={"raw_json": "1"})
+            resp.raise_for_status()
+            return parse_reddit_listing(resp.json())
+    except httpx.HTTPError:
+        pass
+
+    try:
+        with httpx.Client(timeout=30.0, headers={"User-Agent": USER_AGENT}, follow_redirects=True) as client:
+            resp = client.get(REDDIT_RSS_MULTIREDDIT)
+            resp.raise_for_status()
+            return parse_reddit_rss(resp.text)
+    except httpx.HTTPError as exc:
+        if oauth_error:
+            raise RuntimeError(f"Reddit OAuth failed and public fallbacks failed: {oauth_error}") from exc
+        raise
+
+
+def parse_reddit_listing(data: dict[str, object]) -> list[dict[str, object]]:
+    listing = data.get("data", {})
+    if not isinstance(listing, dict):
+        return []
+
+    children = listing.get("children", [])
+    if not isinstance(children, list):
+        return []
+
+    posts = []
+    for child in children:
+        if isinstance(child, dict) and isinstance(child.get("data"), dict):
+            posts.append(child["data"])
+    return posts
+
+
+def parse_reddit_rss(feed_xml: str) -> list[dict[str, object]]:
+    root = ET.fromstring(feed_xml)
+    atom_namespace = "{http://www.w3.org/2005/Atom}"
+    media_namespace = "{http://search.yahoo.com/mrss/}"
+
+    posts: list[dict[str, object]] = []
+    for entry in root.findall(f"{atom_namespace}entry"):
+        post_id = entry.findtext(f"{atom_namespace}id", default="")
+        if post_id.startswith("t3_"):
+            post_id = post_id[3:]
+
+        link_element = entry.find(f"{atom_namespace}link")
+        reddit_url = link_element.attrib.get("href", "") if link_element is not None else ""
+        category_element = entry.find(f"{atom_namespace}category")
+        subreddit = ""
+        if category_element is not None:
+            subreddit = category_element.attrib.get("term", "") or category_element.attrib.get("label", "").removeprefix("r/")
+
+        content_html = entry.findtext(f"{atom_namespace}content", default="")
+        has_media = entry.find(f"{media_namespace}thumbnail") is not None or "<img" in content_html
+
+        posts.append({
+            "id": post_id,
+            "title": entry.findtext(f"{atom_namespace}title", default="No title"),
+            "selftext": html_to_text(content_html),
+            "permalink": urlparse(reddit_url).path,
+            "url": reddit_url,
+            "subreddit": subreddit,
+            "domain": urlparse(reddit_url).netloc,
+            "ups": 0,
+            "num_comments": 0,
+            "post_hint": "image" if has_media else "",
+            "is_video": False,
+            "is_gallery": False,
+            "link_flair_text": "",
+        })
+
+    return posts
+
+
+def html_to_text(raw_html: str) -> str:
+    unescaped = html.unescape(raw_html)
+    without_tags = re.sub(r"<[^>]+>", " ", unescaped)
+    return re.sub(r"\s+", " ", without_tags).strip()
 
 
 def filter_relevant_posts(posts: list[dict[str, object]]) -> list[dict[str, object]]:
